@@ -46,6 +46,7 @@ button:disabled{opacity:.5;cursor:default}
 .help ul{padding-left:18px;margin:6px 0 10px}
 .help label{display:flex;align-items:center;gap:8px;min-height:36px}
 .help input{width:20px;height:20px;accent-color:var(--accent)}
+.row{display:flex;gap:6px}
 .tt{display:flex;align-items:center;gap:10px;margin:4px 0 8px}.tt span{flex:1}
 .tbar{position:relative;height:14px;border-radius:7px;background:rgba(255,255,255,.12);margin:0 0 8px}
 .tbar::after{content:'';position:absolute;left:50%;top:0;bottom:0;width:2px;background:rgba(255,255,255,.35)}
@@ -90,7 +91,7 @@ button:disabled{opacity:.5;cursor:default}
 
 <div id="hud" class="hidden">
  <div class="tl"><div id="lap">Lap 1/3</div><div id="pos"></div></div>
- <div class="tr"><div id="time">0:00.00</div><button id="leaveBtn" class="ghost sm">Leave</button></div>
+ <div class="tr"><div id="time">0:00.00</div><div class="row"><button id="muteBtn" class="ghost sm">Sound on</button><button id="leaveBtn" class="ghost sm">Leave</button></div></div>
  <div id="big"></div>
  <div id="msg"></div>
  <div id="hint"></div>
@@ -126,6 +127,8 @@ button:disabled{opacity:.5;cursor:default}
     </ul>
     <div class="tt"><button id="tiltBtn" class="sm">Test tilt</button><span id="tiltStatus">Hold the phone like in a race, tap Test tilt, then tilt it.</span></div>
     <div class="tbar"><i id="tiltDot"></i></div>
+    <label><input type="checkbox" id="optMusic"> Music</label>
+    <label><input type="checkbox" id="optSfx"> Sound effects and wind</label>
     <label><input type="checkbox" id="invS"> Invert tilt steering</label>
     <label><input type="checkbox" id="invP"> Invert tilt climbing</label>
    </details>
@@ -163,6 +166,61 @@ const lerpAng=(a,b,t)=>{const d=(((b-a+Math.PI)%TAU)+TAU)%TAU-Math.PI;return a+d
 const rng=seed=>()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296};
 const store={get(k,d){try{const v=localStorage.getItem('hexwind.'+k);return v==null?d:JSON.parse(v)}catch{return d}},set(k,v){try{localStorage.setItem('hexwind.'+k,JSON.stringify(v))}catch{}}};
 const isTouch=matchMedia('(pointer:coarse)').matches||'ontouchstart' in window;
+
+// ---------- sound: everything is synthesised with Web Audio, no files
+const audio=(()=>{
+ const opt={on:store.get('snd',true),music:store.get('music',true),sfx:store.get('sfx',true)};
+ let ctx=null,master,musicBus,sfxBus,windGain,windFilter,noise,nextT=0,step=0,timer=0;
+ const hz=m=>440*2**((m-69)/12);
+ const CHORDS=[[50,53,57],[46,50,53],[43,46,50],[45,49,52]]; // Dm  Bb  Gm  A  (minor with a witchy A major)
+ const ARP=[0,1,2,3,2,1,0,2,1,2,3,2,0,1,2,1];
+ const STEP=60/72/2;
+ function init(){
+  if(ctx){if(ctx.state==='suspended')ctx.resume().catch(()=>{});return}
+  const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;
+  try{ctx=new AC()}catch{return}
+  master=ctx.createGain();master.gain.value=opt.on?0.8:0;master.connect(ctx.destination);
+  musicBus=ctx.createGain();musicBus.gain.value=opt.music?0.3:0;sfxBus=ctx.createGain();sfxBus.gain.value=opt.sfx?0.7:0;
+  const delay=ctx.createDelay(1),fb=ctx.createGain(),damp=ctx.createBiquadFilter();delay.delayTime.value=STEP*3;fb.gain.value=0.38;damp.type='lowpass';damp.frequency.value=1600;
+  musicBus.connect(master);musicBus.connect(delay);delay.connect(damp);damp.connect(fb);fb.connect(delay);damp.connect(master);sfxBus.connect(master);
+  noise=ctx.createBuffer(1,ctx.sampleRate*2,ctx.sampleRate);const d=noise.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
+  const src=ctx.createBufferSource();src.buffer=noise;src.loop=true;windFilter=ctx.createBiquadFilter();windFilter.type='bandpass';windFilter.frequency.value=400;windFilter.Q.value=0.7;
+  windGain=ctx.createGain();windGain.gain.value=0;src.connect(windFilter);windFilter.connect(windGain);windGain.connect(sfxBus);src.start();
+  nextT=ctx.currentTime+0.2;timer=setInterval(schedule,100);
+ }
+ function voice(f,t,dur,{type='sine',gain=0.2,attack=0.01,dest=sfxBus,to=0,cutoff=0}={}){
+  const o=ctx.createOscillator(),g=ctx.createGain();o.type=type;o.frequency.setValueAtTime(f,t);if(to)o.frequency.exponentialRampToValueAtTime(to,t+dur);
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(gain,t+attack);g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  let out=o;if(cutoff){const fl=ctx.createBiquadFilter();fl.type='lowpass';fl.frequency.value=cutoff;o.connect(fl);out=fl}
+  out.connect(g);g.connect(dest);o.start(t);o.stop(t+dur+0.05);
+ }
+ function schedule(){
+  if(!ctx||ctx.state!=='running')return;
+  while(nextT<ctx.currentTime+0.35){
+   const ch=CHORDS[Math.floor(step/16)%4],s=step%16,t=nextT;
+   if(s===0){for(const m of ch){voice(hz(m),t,STEP*17,{type:'triangle',gain:0.07,attack:1.4,dest:musicBus,cutoff:900});voice(hz(m)*1.004,t,STEP*17,{type:'sine',gain:0.05,attack:1.6,dest:musicBus})}voice(hz(ch[0]-12),t,STEP*7,{gain:0.16,attack:0.05,dest:musicBus})}
+   if(s===8)voice(hz(ch[0]-12),t,STEP*7,{gain:0.12,attack:0.05,dest:musicBus});
+   if(Math.random()>0.28){const i=ARP[s],m=i===3?ch[0]+24:ch[i]+12;voice(hz(m),t,STEP*2.5,{type:'triangle',gain:0.07,dest:musicBus,cutoff:2400})}
+   nextT+=STEP;step++;
+  }
+ }
+ const ok=()=>ctx&&ctx.state==='running';
+ const noiseHit=(t,dur,f,gain)=>{const s=ctx.createBufferSource(),fl=ctx.createBiquadFilter(),g=ctx.createGain();s.buffer=noise;fl.type='lowpass';fl.frequency.value=f;g.gain.setValueAtTime(gain,t);g.gain.exponentialRampToValueAtTime(0.0001,t+dur);s.connect(fl);fl.connect(g);g.connect(sfxBus);s.start(t);s.stop(t+dur)};
+ const PENTA=[74,77,79,81,84,86];
+ return{
+  init,opt,
+  set(k,v){opt[k]=v;store.set(k==='on'?'snd':k,v);if(!ctx)return;const t=ctx.currentTime;master.gain.setTargetAtTime(opt.on?0.8:0,t,0.05);musicBus.gain.setTargetAtTime(opt.music?0.3:0,t,0.05);sfxBus.gain.setTargetAtTime(opt.sfx?0.7:0,t,0.05)},
+  suspend(){if(ctx&&ctx.state==='running')ctx.suspend().catch(()=>{})},
+  update(speed,boost){if(!ok())return;const t=ctx.currentTime,k=clamp(speed/42,0,1);windGain.gain.setTargetAtTime(0.015+k*0.12+boost*k*0.08,t,0.15);windFilter.frequency.setTargetAtTime(250+k*700+boost*900,t,0.15)},
+  beep(go){if(!ok())return;const t=ctx.currentTime;voice(go?880:440,t,go?0.6:0.18,{type:'square',gain:0.08,cutoff:2000});if(go)voice(1320,t,0.6,{gain:0.06})},
+  chime(n){if(!ok())return;const t=ctx.currentTime,f=hz(PENTA[n%PENTA.length]);voice(f,t,0.9,{gain:0.16});voice(f*2.01,t,0.5,{gain:0.05})},
+  bonk(){if(!ok())return;const t=ctx.currentTime;voice(170,t,0.25,{gain:0.45,to:45});voice(560,t+0.02,0.4,{type:'triangle',gain:0.14,to:170});noiseHit(t,0.12,900,0.35)},
+  lap(){if(!ok())return;const t=ctx.currentTime;[74,77,81,86].forEach((m,i)=>voice(hz(m),t+i*0.1,0.5,{type:'triangle',gain:0.12}))},
+  finish(){if(!ok())return;const t=ctx.currentTime;[62,65,69,74,77,81,86].forEach((m,i)=>voice(hz(m),t+i*0.09,1.2,{type:'triangle',gain:0.12}));[62,69,74].forEach(m=>voice(hz(m),t+0.6,2.2,{gain:0.07,attack:0.2}))},
+ };
+})();
+addEventListener('pointerdown',()=>audio.init());addEventListener('keydown',()=>audio.init());
+document.addEventListener('visibilitychange',()=>{if(document.hidden)audio.suspend();else audio.init()});
 
 // ---------- tuning
 const LAPS=3,MAX_SPEED=30,BOOST=0.4,BOOST_RANGE=5,TURN=1.7,CLIMB=13,MIN_AGL=0.7,CEIL=95,STUN=1.1,RING=5.5,NCP=14;
@@ -337,19 +395,19 @@ function startRace(order,ms){
  fins={};if(mineColor!==myColor){scene.remove(mine.root);mine=makeWitch(myColor);mineColor=myColor}
  placeAtStart(Math.max(0,order.indexOf(myId)));mine.root.visible=true;
  camPos.set(me.x-Math.sin(me.yaw)*7.2,me.y+2.6,me.z-Math.cos(me.yaw)*7.2);camera.fov=68;camera.updateProjectionMatrix();
- mode='countdown';goAt=performance.now()+ms;show(null);$('hud').classList.remove('hidden');
+ mode='countdown';goAt=performance.now()+ms;lastCount=0;show(null);$('hud').classList.remove('hidden');
  $('hint').textContent=isTouch?(tilt.ok?'Hold the phone sideways. Tilt to steer, tip the top edge toward you to climb.':'Drag on the screen to steer and climb.'):'A/D steer · W/S climb and dive · fly low for a boost';
  $('recenter').classList.toggle('hidden',!(isTouch&&tilt.ok));
 }
-function stunMe(t){me.stun=me.stunDur=t;me.hitCd=t+0.4;me.speed=-8;me.vy=2;shake=0.45;burst(me.x,me.y,me.z,yellow,16);flash('Bonk!',700,true);try{navigator.vibrate&&navigator.vibrate(90)}catch{}}
+function stunMe(t){me.stun=me.stunDur=t;me.hitCd=t+0.4;me.speed=-8;me.vy=2;shake=0.45;burst(me.x,me.y,me.z,yellow,16);flash('Bonk!',700,true);audio.bonk();try{navigator.vibrate&&navigator.vibrate(90)}catch{}}
 function passCp(now){
- const c=cps[me.next];burst(c.x,c.y-1,c.z,gold,10);me.cpCount++;me.next=(me.next+1)%NCP;
+ const c=cps[me.next];burst(c.x,c.y-1,c.z,gold,10);me.cpCount++;if(me.cpCount<LAPS*NCP+1&&(me.cpCount-1)%NCP!==0)audio.chime(me.cpCount);me.next=(me.next+1)%NCP;
  if(me.cpCount===LAPS*NCP+1)finish(now);
- else if(me.cpCount>1&&(me.cpCount-1)%NCP===0){const lap=(me.cpCount-1)/NCP+1;flash(lap===LAPS?'Final lap!':`Lap ${lap}`,1300)}
+ else if(me.cpCount>1&&(me.cpCount-1)%NCP===0){const lap=(me.cpCount-1)/NCP+1;flash(lap===LAPS?'Final lap!':`Lap ${lap}`,1300);audio.lap()}
 }
 function calcProg(){const c=cps[me.next],pv=cps[(me.next+NCP-1)%NCP],seg=Math.hypot(c.x-pv.x,c.z-pv.z)||1,d=Math.hypot(c.x-me.x,c.z-me.z);return me.cpCount+clamp(1-d/seg,0,0.99)}
 function finish(now){
- me.finished=true;me.finishTime=(now-raceT0)/1000;fins[myId]=me.finishTime;flash('Finished!',1500);
+ me.finished=true;me.finishTime=(now-raceT0)/1000;fins[myId]=me.finishTime;flash('Finished!',1500);audio.finish();
  if(role==='host')broadcast({t:'res',fins});else if(role==='client')sendHost({t:'fin',time:me.finishTime});
  else{const best=store.get('best',null);if(best==null||me.finishTime<best)store.set('best',me.finishTime)}
  setTimeout(()=>{if(mode==='race')showResults()},1400);
@@ -531,6 +589,9 @@ $('resLeave').onclick=()=>{if(role==='solo'){role='none';roster=[];showMenu('')}
 let leaveArm=0;
 $('leaveBtn').onclick=()=>{const b=$('leaveBtn');if(performance.now()-leaveArm<2500){b.textContent='Leave';if(role==='solo'){role='none';roster=[];showMenu('')}else leave('')}else{leaveArm=performance.now();b.textContent='Tap again to leave';setTimeout(()=>{b.textContent='Leave'},2500)}};
 $('recenter').onclick=recenter;
+const muteLbl=()=>{$('muteBtn').textContent=audio.opt.on?'Sound on':'Sound off'};muteLbl();
+$('muteBtn').onclick=()=>{audio.init();audio.set('on',!audio.opt.on);muteLbl()};
+for(const [id,k] of [['optMusic','music'],['optSfx','sfx']]){const el=$(id);el.checked=audio.opt[k];el.onchange=()=>{audio.init();audio.set(k,el.checked)}}
 let tiltTest=false;
 $('tiltBtn').onclick=()=>{enableMotion();tiltTest=true;tilt.ok=false;$('tiltStatus').textContent='Waiting for the motion sensor…';setTimeout(()=>{if(tiltTest&&!tilt.events)$('tiltStatus').textContent=isSecureContext?'No motion data. In Chrome: Settings → Site settings → Motion sensors, allow this site.':'No motion data: this page must be opened from an https:// address.'},1500)};
 function updateTiltTest(){if(!tiltTest||!tilt.ok)return;const v=tiltValues();$('tiltDot').style.left=(50+v.steer*50)+'%';$('tiltStatus').textContent=`Working · steer ${v.steer>0.05?'right':v.steer<-0.05?'left':'centre'} · ${v.climb>0.05?'climb':v.climb<-0.05?'dive':'level'}`}
@@ -538,10 +599,12 @@ for(const k of ['invS','invP']){const el=$(k);el.checked=settings[k];el.onchange
 if(isTouch&&!isSecureContext)$('status').textContent='Tilt controls need an https:// address. Dragging on the screen still works.';
 
 // ---------- loop
-let last=performance.now(),elapsed=0,sendAcc=0,hintOff=0;
+let last=performance.now(),elapsed=0,sendAcc=0,hintOff=0,lastCount=0;
 function frame(now){
  requestAnimationFrame(frame);const dt=Math.min(0.05,(now-last)/1000);last=now;elapsed+=dt;
- if(mode==='countdown'&&now>=goAt){mode='race';raceT0=goAt;flash('Fly!',800);recenter();hintOff=now+2500}
+ if(mode==='countdown'){const n=Math.ceil((goAt-now)/1000);if(n!==lastCount&&n>0&&n<=3){lastCount=n;audio.beep(false)}}
+ if(mode==='countdown'&&now>=goAt){mode='race';raceT0=goAt;flash('Fly!',800);audio.beep(true);recenter();hintOff=now+2500}
+ audio.update(mode==='race'?Math.abs(me.speed):0,mode==='race'?me.boost:0);
  if(hintOff&&now>hintOff){$('hint').textContent='';hintOff=0}
  const racing=mode==='countdown'||mode==='race';
  if(racing){updateMe(dt,mode==='race',now);updateLocalMesh(dt,elapsed);updateCamera(dt);updateHud(now)}else{orbitCamera(elapsed);if(mode==='menu')updateTiltTest()}
