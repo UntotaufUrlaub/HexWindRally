@@ -179,8 +179,8 @@ const audio=(()=>{
   if(ctx){if(ctx.state==='suspended')ctx.resume().catch(()=>{});return}
   const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;
   try{ctx=new AC()}catch{return}
-  master=ctx.createGain();master.gain.value=opt.on?0.8:0;master.connect(ctx.destination);
-  musicBus=ctx.createGain();musicBus.gain.value=opt.music?0.3:0;sfxBus=ctx.createGain();sfxBus.gain.value=opt.sfx?0.7:0;
+  master=ctx.createGain();master.gain.value=opt.on?0.8:0;const comp=ctx.createDynamicsCompressor();comp.threshold.value=-10;comp.ratio.value=4;master.connect(comp);comp.connect(ctx.destination);
+  musicBus=ctx.createGain();musicBus.gain.value=opt.music?1.05:0;sfxBus=ctx.createGain();sfxBus.gain.value=opt.sfx?0.7:0;
   const delay=ctx.createDelay(1),fb=ctx.createGain(),damp=ctx.createBiquadFilter();delay.delayTime.value=STEP*3;fb.gain.value=0.38;damp.type='lowpass';damp.frequency.value=1600;
   musicBus.connect(master);musicBus.connect(delay);delay.connect(damp);damp.connect(fb);fb.connect(delay);damp.connect(master);sfxBus.connect(master);
   noise=ctx.createBuffer(1,ctx.sampleRate*2,ctx.sampleRate);const d=noise.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
@@ -209,9 +209,9 @@ const audio=(()=>{
  const PENTA=[74,77,79,81,84,86];
  return{
   init,opt,
-  set(k,v){opt[k]=v;store.set(k==='on'?'snd':k,v);if(!ctx)return;const t=ctx.currentTime;master.gain.setTargetAtTime(opt.on?0.8:0,t,0.05);musicBus.gain.setTargetAtTime(opt.music?0.3:0,t,0.05);sfxBus.gain.setTargetAtTime(opt.sfx?0.7:0,t,0.05)},
+  set(k,v){opt[k]=v;store.set(k==='on'?'snd':k,v);if(!ctx)return;const t=ctx.currentTime;master.gain.setTargetAtTime(opt.on?0.8:0,t,0.05);musicBus.gain.setTargetAtTime(opt.music?1.05:0,t,0.05);sfxBus.gain.setTargetAtTime(opt.sfx?0.7:0,t,0.05)},
   suspend(){if(ctx&&ctx.state==='running')ctx.suspend().catch(()=>{})},
-  update(speed,boost){if(!ok())return;const t=ctx.currentTime,k=clamp(speed/42,0,1);windGain.gain.setTargetAtTime(0.015+k*0.12+boost*k*0.08,t,0.15);windFilter.frequency.setTargetAtTime(250+k*700+boost*900,t,0.15)},
+  update(speed,boost){if(!ok())return;const t=ctx.currentTime,k=clamp(speed/42,0,1);windGain.gain.setTargetAtTime(0.0025+k*0.018+boost*k*0.013,t,0.15);windFilter.frequency.setTargetAtTime(250+k*700+boost*900,t,0.15)},
   beep(go){if(!ok())return;const t=ctx.currentTime;voice(go?880:440,t,go?0.6:0.18,{type:'square',gain:0.08,cutoff:2000});if(go)voice(1320,t,0.6,{gain:0.06})},
   chime(n){if(!ok())return;const t=ctx.currentTime,f=hz(PENTA[n%PENTA.length]);voice(f,t,0.9,{gain:0.16});voice(f*2.01,t,0.5,{gain:0.05})},
   bonk(){if(!ok())return;const t=ctx.currentTime;voice(170,t,0.25,{gain:0.45,to:45});voice(560,t+0.02,0.4,{type:'triangle',gain:0.14,to:170});noiseHit(t,0.12,900,0.35)},
