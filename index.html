@@ -46,6 +46,10 @@ button:disabled{opacity:.5;cursor:default}
 .help ul{padding-left:18px;margin:6px 0 10px}
 .help label{display:flex;align-items:center;gap:8px;min-height:36px}
 .help input{width:20px;height:20px;accent-color:var(--accent)}
+.tt{display:flex;align-items:center;gap:10px;margin:4px 0 8px}.tt span{flex:1}
+.tbar{position:relative;height:14px;border-radius:7px;background:rgba(255,255,255,.12);margin:0 0 8px}
+.tbar::after{content:'';position:absolute;left:50%;top:0;bottom:0;width:2px;background:rgba(255,255,255,.35)}
+.tbar i{position:absolute;top:-3px;left:50%;width:20px;height:20px;margin-left:-10px;border-radius:50%;background:var(--accent)}
 .code{font:800 64px/1 'Grenze Gotisch',serif;letter-spacing:.12em;color:var(--gold);margin:4px 0 8px}
 .label{margin:0;color:var(--muted);font-weight:700}
 .roster{list-style:none;padding:0;margin:0 0 16px;display:grid;gap:6px}
@@ -120,6 +124,8 @@ button:disabled{opacity:.5;cursor:default}
      <li>Flying within a few metres of the ground gives up to 40% more speed.</li>
      <li>Trees, rocks, lantern posts and other witches stun you briefly.</li>
     </ul>
+    <div class="tt"><button id="tiltBtn" class="sm">Test tilt</button><span id="tiltStatus">Hold the phone like in a race, tap Test tilt, then tilt it.</span></div>
+    <div class="tbar"><i id="tiltDot"></i></div>
     <label><input type="checkbox" id="invS"> Invert tilt steering</label>
     <label><input type="checkbox" id="invP"> Invert tilt climbing</label>
    </details>
@@ -285,14 +291,23 @@ canvas.addEventListener('pointerdown',e=>{if(mode!=='race'&&mode!=='countdown')r
 addEventListener('pointermove',e=>{if(!drag.on||e.pointerId!==drag.id)return;drag.dx=e.clientX-drag.sx;drag.dy=e.clientY-drag.sy;knob.style.transform=`translate(${clamp(drag.dx,-55,55)}px,${clamp(drag.dy,-55,55)}px)`});
 const endDrag=e=>{if(e.pointerId===drag.id){drag.on=false;stick.classList.add('hidden')}};
 addEventListener('pointerup',endDrag);addEventListener('pointercancel',endDrag);
-const tilt={ok:false,x:0,y:9.8,z:0,neutral:0,listening:false};
+// Tilt is measured relative to a "neutral" gravity vector captured when the race starts (or on Recenter),
+// so it works however the phone is held and whether or not the screen rotated.
+const tilt={ok:false,x:0,y:9.8,z:0,n:{x:0,y:9.8,z:0},listening:false,events:0};
 const settings={invS:store.get('invS',false),invP:store.get('invP',false)};
-function onMotion(e){const g=e.accelerationIncludingGravity;if(!g||g.x==null)return;const ang=((screen.orientation&&screen.orientation.angle)??(window.orientation||0))*Math.PI/180,ca=Math.cos(ang),sa=Math.sin(ang);const sx=g.x*ca-g.y*sa,sy=g.x*sa+g.y*ca;
- if(!tilt.ok){tilt.ok=true;tilt.x=sx;tilt.y=sy;tilt.z=g.z;recenter();}else{tilt.x+=(sx-tilt.x)*.25;tilt.y+=(sy-tilt.y)*.25;tilt.z+=(g.z-tilt.z)*.25}}
-function enableMotion(){if(tilt.listening||!isTouch)return;tilt.listening=true;const on=()=>addEventListener('devicemotion',onMotion);
+function onMotion(e){const g=e.accelerationIncludingGravity;if(!g||g.x==null||!Number.isFinite(g.x))return;tilt.events++;
+ if(!tilt.ok){tilt.ok=true;tilt.x=g.x;tilt.y=g.y;tilt.z=g.z;recenter()}else{tilt.x+=(g.x-tilt.x)*.25;tilt.y+=(g.y-tilt.y)*.25;tilt.z+=(g.z-tilt.z)*.25}}
+function enableMotion(){if(tilt.listening)return;tilt.listening=true;const on=()=>{addEventListener('devicemotion',onMotion)};
  if(typeof DeviceMotionEvent!=='undefined'&&typeof DeviceMotionEvent.requestPermission==='function')DeviceMotionEvent.requestPermission().then(r=>{if(r==='granted')on()}).catch(()=>{});else on()}
-const pitchAngle=()=>Math.atan2(tilt.z,tilt.y);
-function recenter(){if(tilt.ok)tilt.neutral=pitchAngle()}
+function recenter(){if(tilt.ok)tilt.n={x:tilt.x,y:tilt.y,z:tilt.z}}
+function tiltValues(){
+ const n=tilt.n,c=tilt,ln=Math.hypot(n.x,n.y),lc=Math.hypot(c.x,c.y);
+ // steering: rotation of gravity within the screen plane (like turning a wheel)
+ const roll=ln>2&&lc>2?Math.atan2(n.x*c.y-n.y*c.x,n.x*c.x+n.y*c.y):0;
+ // climbing: how much the screen tipped toward or away from you
+ const pitch=Math.atan2(c.z,lc)-Math.atan2(n.z,ln);
+ return{steer:dz(roll/0.42,0.06)*(settings.invS?-1:1),climb:dz(pitch/0.38,0.1)*(settings.invP?-1:1)};
+}
 const dz=(v,d)=>{const a=Math.abs(v);return a<d?0:Math.sign(v)*Math.min(1,(a-d)/(1-d))};
 function readInput(){
  let s=0,c=0;
@@ -300,7 +315,7 @@ function readInput(){
  if(keys.has('ArrowUp')||keys.has('KeyW'))c+=1;if(keys.has('ArrowDown')||keys.has('KeyS'))c-=1;
  if(s||c)return{steer:s,climb:c};
  if(drag.on)return{steer:clamp(drag.dx/60,-1,1),climb:clamp(-drag.dy/60,-1,1)};
- if(tilt.ok){const roll=Math.atan2(-tilt.x,Math.hypot(tilt.y,tilt.z));return{steer:dz(roll/0.42,0.06)*(settings.invS?-1:1),climb:dz((pitchAngle()-tilt.neutral)/0.38,0.1)*(settings.invP?-1:1)}}
+ if(tilt.ok)return tiltValues();
  return{steer:0,climb:0};
 }
 
@@ -516,6 +531,9 @@ $('resLeave').onclick=()=>{if(role==='solo'){role='none';roster=[];showMenu('')}
 let leaveArm=0;
 $('leaveBtn').onclick=()=>{const b=$('leaveBtn');if(performance.now()-leaveArm<2500){b.textContent='Leave';if(role==='solo'){role='none';roster=[];showMenu('')}else leave('')}else{leaveArm=performance.now();b.textContent='Tap again to leave';setTimeout(()=>{b.textContent='Leave'},2500)}};
 $('recenter').onclick=recenter;
+let tiltTest=false;
+$('tiltBtn').onclick=()=>{enableMotion();tiltTest=true;tilt.ok=false;$('tiltStatus').textContent='Waiting for the motion sensor…';setTimeout(()=>{if(tiltTest&&!tilt.events)$('tiltStatus').textContent=isSecureContext?'No motion data. In Chrome: Settings → Site settings → Motion sensors, allow this site.':'No motion data: this page must be opened from an https:// address.'},1500)};
+function updateTiltTest(){if(!tiltTest||!tilt.ok)return;const v=tiltValues();$('tiltDot').style.left=(50+v.steer*50)+'%';$('tiltStatus').textContent=`Working · steer ${v.steer>0.05?'right':v.steer<-0.05?'left':'centre'} · ${v.climb>0.05?'climb':v.climb<-0.05?'dive':'level'}`}
 for(const k of ['invS','invP']){const el=$(k);el.checked=settings[k];el.onchange=()=>{settings[k]=el.checked;store.set(k,el.checked)}}
 if(isTouch&&!isSecureContext)$('status').textContent='Tilt controls need an https:// address. Dragging on the screen still works.';
 
@@ -526,7 +544,7 @@ function frame(now){
  if(mode==='countdown'&&now>=goAt){mode='race';raceT0=goAt;flash('Fly!',800);recenter();hintOff=now+2500}
  if(hintOff&&now>hintOff){$('hint').textContent='';hintOff=0}
  const racing=mode==='countdown'||mode==='race';
- if(racing){updateMe(dt,mode==='race',now);updateLocalMesh(dt,elapsed);updateCamera(dt);updateHud(now)}else orbitCamera(elapsed);
+ if(racing){updateMe(dt,mode==='race',now);updateLocalMesh(dt,elapsed);updateCamera(dt);updateHud(now)}else{orbitCamera(elapsed);if(mode==='menu')updateTiltTest()}
  updateRemotes(dt,now);updateRings(now);updateParticles(dt);
  sendAcc+=dt;if(sendAcc>=0.05){sendAcc=0;netTick()}
  stars.position.copy(camera.position);moon.position.copy(camera.position).add(moonOff);
